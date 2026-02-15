@@ -41,7 +41,9 @@ void drawNoWifi();
 void setup() {
     M5.begin();
     M5.EPD.SetRotation(0);  // landscape, USB+rocker on top: 960 x 540
-    M5.EPD.Clear(true);
+    // Don't call M5.EPD.Clear(true) here — it blanks the screen immediately
+    // and if power is lost before pushCanvas, you get a blank display.
+    // UPDATE_MODE_GC16 in pushCanvas does a full refresh anyway.
     M5.RTC.begin();
 
     uint32_t battMv = M5.getBatteryVoltage();
