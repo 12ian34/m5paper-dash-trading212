@@ -1,0 +1,15 @@
+.env
+.venv/
+__pycache__/
+*.pyc
+
+# PlatformIO
+firmware/.pio/
+firmware/.vscode/
+
+# Server runtime data
+server/.venv/
+server/dashboard.json
+server/daily_baseline.json
+server/cron.log
+server/http.log
