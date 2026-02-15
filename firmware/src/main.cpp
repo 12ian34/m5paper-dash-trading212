@@ -3,8 +3,8 @@
  * Connects to WiFi, syncs time via NTP, fetches dashboard JSON
  * from Pi, displays Trading 212 P&L + moon phase on e-ink.
  *
- * Power button wakes from shutdown and triggers a full refresh.
- * Side toggle (left/right/click) reserved for future use.
+ * Uses ESP32 deep sleep with timer + GPIO wake.
+ * Push the side toggle (left or right) to wake and refresh immediately.
  */
 
 #include <M5EPD.h>
@@ -12,6 +12,7 @@
 #include <HTTPClient.h>
 #include <ArduinoJson.h>
 #include <cmath>
+#include <esp_sleep.h>
 #include "time.h"
 
 // ---- CONFIG (injected from .env at build time) ----
@@ -28,7 +29,7 @@
 const char* wifi_ssid     = WIFI_SSID;
 const char* wifi_pass     = WIFI_PASS;
 const char* dashboard_url = DASHBOARD_URL;
-const int   REFRESH_MINS  = 15;
+const int   REFRESH_MINS  = 30;
 // ---------------------------------------------------
 
 M5EPD_Canvas canvas(&M5.EPD);
@@ -38,12 +39,19 @@ void drawDashboard(JsonObject& widgets, int battPct);
 void drawError(const char* msg);
 void drawNoWifi();
 
+// Enter deep sleep with timer + side toggle wake.
+// GPIO39 (left) and GPIO37 (right) are RTC-capable GPIOs.
+void goToSleep() {
+    M5.disableEPDPower();  // turn off e-ink controller to save power
+    esp_sleep_enable_timer_wakeup((uint64_t)REFRESH_MINS * 60 * 1000000ULL);
+    // Wake on side toggle left (GPIO39) or right (GPIO37) — either direction
+    esp_sleep_enable_ext1_wakeup((1ULL << 39) | (1ULL << 37), ESP_EXT1_WAKEUP_ALL_LOW);
+    esp_deep_sleep_start();
+}
+
 void setup() {
     M5.begin();
     M5.EPD.SetRotation(0);  // landscape, USB+rocker on top: 960 x 540
-    // Don't call M5.EPD.Clear(true) here — it blanks the screen immediately
-    // and if power is lost before pushCanvas, you get a blank display.
-    // UPDATE_MODE_GC16 in pushCanvas does a full refresh anyway.
     M5.RTC.begin();
 
     uint32_t battMv = M5.getBatteryVoltage();
@@ -59,7 +67,7 @@ void setup() {
 
     if (WiFi.status() != WL_CONNECTED) {
         drawNoWifi();
-        M5.shutdown(REFRESH_MINS * 60);
+        goToSleep();
         return;
     }
 
@@ -77,7 +85,7 @@ void setup() {
         drawError(errBuf);
         http.end();
         WiFi.disconnect(true);
-        M5.shutdown(REFRESH_MINS * 60);
+        goToSleep();
         return;
     }
 
@@ -89,18 +97,20 @@ void setup() {
     DeserializationError err = deserializeJson(doc, payload);
     if (err) {
         drawError("JSON parse failed");
-        M5.shutdown(REFRESH_MINS * 60);
+        goToSleep();
         return;
     }
 
     JsonObject widgets = doc["widgets"];
     drawDashboard(widgets, battPct);
 
-    M5.shutdown(REFRESH_MINS * 60);
+    goToSleep();
 }
 
 void loop() {
-    delay(REFRESH_MINS * 60 * 1000UL);
+    // Should never reach here — goToSleep() doesn't return.
+    // Safety fallback: wait and restart.
+    delay(60000);
     ESP.restart();
 }
 

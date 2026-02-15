@@ -14,7 +14,7 @@ if [ ! -f "$VENV" ]; then
 fi
 
 # Build cron entries
-UPDATE_JOB="*/5 * * * * cd $DIR && $VENV update_dashboard.py >> $DIR/cron.log 2>&1"
+UPDATE_JOB="29,59 * * * * cd $DIR && $VENV update_dashboard.py >> $DIR/cron.log 2>&1"
 SERVER_JOB="@reboot cd $DIR && python3 -m http.server 8080 > $DIR/http.log 2>&1 &"
 
 # Add to crontab (preserving existing entries)
