@@ -1,7 +1,7 @@
 /*
- * M5Paper Dashboard
- * Connects to WiFi, syncs time via NTP, fetches dashboard JSON
- * from Pi, displays Trading 212 P&L + moon phase on e-ink.
+ * M5Paper Trading Dashboard
+ * Connects to WiFi, fetches dashboard JSON from Pi,
+ * displays Trading 212 P&L + top winners/losers on e-ink.
  *
  * Uses M5.shutdown() for timed wake (RTC alarm).
  * On USB power, shutdown doesn't fully power off — loop() handles restart.
@@ -11,7 +11,6 @@
 #include <WiFi.h>
 #include <HTTPClient.h>
 #include <ArduinoJson.h>
-#include <cmath>
 #include <esp_task_wdt.h>
 #include <esp_wifi.h>
 #include "time.h"
@@ -43,7 +42,7 @@ const int   REFRESH_MINS  = 30;
 M5EPD_Canvas canvas(&M5.EPD);
 
 void syncTime();
-void drawDashboard(JsonObject& widgets, int battPct);
+void drawDashboard(JsonObject& data, int battPct);
 void drawError(const char* msg);
 void drawNoWifi();
 
@@ -140,7 +139,7 @@ void setup() {
     }
 
     payload.trim();  // remove BOM/whitespace
-    JsonDocument doc;  // ArduinoJson 7 auto-sizes; 2048B enough for ~350B dashboard
+    JsonDocument doc;  // ArduinoJson 7 auto-sizes
     DeserializationError err = deserializeJson(doc, payload);
     if (err) {
         char errBuf[80];
@@ -193,12 +192,11 @@ void syncTime() {
 
 // ---- Drawing ----
 
-// Tile grid: 3 columns x 2 rows
+// 3x2 tile grid
 #define TW   320   // tile width  (960 / 3)
 #define TH   270   // tile height (540 / 2)
 
 void drawGrid() {
-    // Thick grid lines between tiles
     int g = 10;
     // Vertical dividers
     canvas.fillRect(TW - g / 2,      0, g, 540, C_LIGHT);  // col 0|1
@@ -214,153 +212,75 @@ void drawLabel(int cx, int y, const char* label) {
     canvas.drawString(label, cx, y);
 }
 
-void drawBigValue(int cx, int y, const char* value) {
-    canvas.setTextDatum(TC_DATUM);
-    canvas.setTextSize(7);
-    canvas.setTextColor(C_BLACK);
-    canvas.drawString(value, cx, y);
+// Tiny battery percentage in top-right corner
+void drawBatteryOverlay(int battPct) {
+    char buf[8];
+    snprintf(buf, sizeof(buf), "%d%%", battPct);
+    canvas.setTextDatum(TR_DATUM);
+    canvas.setTextSize(2);
+    canvas.setTextColor(C_MID);
+    canvas.drawString(buf, 950, 8);
 }
 
-void drawSub(int cx, int y, const char* sub) {
-    canvas.setTextDatum(TC_DATUM);
-    canvas.setTextSize(3);
-    canvas.setTextColor(C_DARK);
-    canvas.drawString(sub, cx, y);
+// Small "Updated HH:MM" at bottom center
+void drawUpdatedOverlay() {
+    rtc_time_t t;
+    M5.RTC.getTime(&t);
+    char buf[32];
+    snprintf(buf, sizeof(buf), "Updated %02d:%02d", t.hour, t.min);
+    canvas.setTextDatum(BC_DATUM);
+    canvas.setTextSize(2);
+    canvas.setTextColor(C_MID);
+    canvas.drawString(buf, 480, 532);
 }
 
-// Simple tile: label, big value, optional sub
-void drawTile(int col, int row, const char* label, const char* value, const char* sub) {
+// Big percentage tile (used for overall P&L and today P&L)
+void drawPctTile(int col, int row, const char* label, float pct) {
     int x = col * TW;
     int y = row * TH;
     int cx = x + TW / 2;
     drawLabel(cx, y + 18, label);
-    drawBigValue(cx, y + 80, value);
-    if (sub && sub[0]) {
-        drawSub(cx, y + 155, sub);
-    }
-}
-
-// Proper moon phase rendering using scan lines and terminator geometry
-void drawMoonDisc(int cx, int cy, int r, float phaseFrac) {
-    // phaseFrac: 0 = new moon, 0.5 = full, 1 = new again
-    // k: terminator squeeze factor. +1 = all dark, -1 = all lit
-    float k = cosf(2.0f * M_PI * phaseFrac);
-
-    for (int dy = -r; dy <= r; dy++) {
-        float w = sqrtf((float)(r * r - dy * dy));
-        if (w < 1) continue;
-
-        // Terminator x offset from center
-        float tx = w * k;
-
-        int darkL, darkR;
-        if (phaseFrac <= 0.5f) {
-            // Waxing: right side lit, left side dark
-            darkL = (int)(cx - w);
-            darkR = (int)(cx + tx);
-        } else {
-            // Waning: left side lit, right side dark
-            darkL = (int)(cx - tx);
-            darkR = (int)(cx + w);
-        }
-
-        int len = darkR - darkL;
-        if (len > 0) {
-            canvas.drawFastHLine(darkL, cy + dy, len, C_BLACK);
-        }
-    }
-
-    canvas.drawCircle(cx, cy, r, C_BLACK);
-}
-
-void drawMoonTile(int col, int row, const char* name, float illum, float age) {
-    int x = col * TW;
-    int y = row * TH;
-    int cx = x + TW / 2;
-    drawLabel(cx, y + 10, "MOON");
-
-    // Calculate phase fraction from age (synodic month = 29.53 days)
-    float phaseFrac = fmodf(age, 29.53f) / 29.53f;
-    drawMoonDisc(cx, y + 115, 55, phaseFrac);
-
-    canvas.setTextDatum(TC_DATUM);
-    canvas.setTextSize(3);
-    canvas.setTextColor(C_BLACK);
-    canvas.drawString(name, cx, y + 185);
-
-    char infoBuf[32];
-    snprintf(infoBuf, sizeof(infoBuf), "%.0f%%  day %.0f", illum, age);
-    canvas.setTextSize(2);
-    canvas.setTextColor(C_DARK);
-    canvas.drawString(infoBuf, cx, y + 220);
-}
-
-// Trading 212 combined tile: overall + today, both big
-void drawTradingTile(int col, int row, JsonObject& t212) {
-    int x = col * TW;
-    int y = row * TH;
-    int cx = x + TW / 2;
-    drawLabel(cx, y + 8, "TRADING 212");
-
-    if (t212.containsKey("error")) {
-        drawBigValue(cx, y + 80, "ERR");
-        drawSub(cx, y + 155, t212["error"].as<const char*>());
-        return;
-    }
-
-    float pnlPct   = t212["pnl_pct"]   | 0.0f;
-    float dailyPct = t212["daily_pct"]  | 0.0f;
-
-    // Overall P&L
-    canvas.setTextDatum(TC_DATUM);
-    canvas.setTextSize(2);
-    canvas.setTextColor(C_MID);
-    canvas.drawString("overall", cx, y + 38);
 
     char pctBuf[16];
-    snprintf(pctBuf, sizeof(pctBuf), "%+.2f%%", pnlPct);
+    snprintf(pctBuf, sizeof(pctBuf), "%+.1f%%", pct);
+    canvas.setTextDatum(MC_DATUM);
     canvas.setTextSize(5);
     canvas.setTextColor(C_BLACK);
-    canvas.drawString(pctBuf, cx, y + 60);
-
-    // Divider
-    canvas.drawFastHLine(x + 30, y + 130, TW - 60, C_LIGHT);
-
-    // Today (percent only)
-    canvas.setTextSize(2);
-    canvas.setTextColor(C_MID);
-    canvas.drawString("today", cx, y + 140);
-
-    char dailyPctBuf[16];
-    snprintf(dailyPctBuf, sizeof(dailyPctBuf), "%+.2f%%", dailyPct);
-    canvas.setTextSize(5);
-    canvas.setTextColor(C_BLACK);
-    canvas.drawString(dailyPctBuf, cx, y + 195);
+    canvas.drawString(pctBuf, cx, y + TH / 2 + 15);
 }
 
-// Sunrise/Sunset tile
-void drawSunTile(int col, int row, const char* rise, const char* set) {
+// List tile showing up to 4 stocks with ticker and % change
+void drawListTile(int col, int row, const char* title, JsonArray items) {
     int x = col * TW;
     int y = row * TH;
     int cx = x + TW / 2;
-    drawLabel(cx, y + 10, "SUN");
+    drawLabel(cx, y + 10, title);
 
-    // Sunrise
-    canvas.setTextDatum(TC_DATUM);
-    canvas.setTextSize(3);
-    canvas.setTextColor(C_MID);
-    canvas.drawString("rise", cx, y + 55);
-    canvas.setTextSize(5);
-    canvas.setTextColor(C_BLACK);
-    canvas.drawString(rise, cx, y + 85);
+    int rowY = y + 50;
+    int spacing = 52;
+    int count = items.size() < 4 ? (int)items.size() : 4;
 
-    // Sunset
-    canvas.setTextSize(3);
-    canvas.setTextColor(C_MID);
-    canvas.drawString("set", cx, y + 155);
-    canvas.setTextSize(5);
-    canvas.setTextColor(C_BLACK);
-    canvas.drawString(set, cx, y + 185);
+    for (int i = 0; i < count; i++) {
+        const char* ticker = items[i]["ticker"] | "???";
+        float pct = items[i]["pct"] | 0.0f;
+
+        char pctBuf[16];
+        snprintf(pctBuf, sizeof(pctBuf), "%+.1f%%", pct);
+
+        // Ticker left-aligned
+        canvas.setTextDatum(TL_DATUM);
+        canvas.setTextSize(3);
+        canvas.setTextColor(C_BLACK);
+        canvas.drawString(ticker, x + 15, rowY);
+
+        // Percent right-aligned
+        canvas.setTextDatum(TR_DATUM);
+        canvas.setTextSize(3);
+        canvas.setTextColor(C_DARK);
+        canvas.drawString(pctBuf, x + TW - 15, rowY);
+
+        rowY += spacing;
+    }
 }
 
 void drawDashboard(JsonObject& widgets, int battPct) {
@@ -368,68 +288,43 @@ void drawDashboard(JsonObject& widgets, int battPct) {
     canvas.fillCanvas(C_WHITE);
     drawGrid();
 
-    // ---- Row 0: Updated At | Date | Battery ----
+    JsonObject t212 = widgets["trading212"];
+    if (t212) {
+        if (t212["error"].is<const char*>()) {
+            // Error state — show message across full screen
+            canvas.setTextDatum(MC_DATUM);
+            canvas.setTextSize(4);
+            canvas.setTextColor(C_BLACK);
+            canvas.drawString("T212 Error", 480, 240);
+            canvas.setTextSize(2);
+            canvas.setTextColor(C_DARK);
+            canvas.drawString(t212["error"].as<const char*>(), 480, 290);
+        } else {
+            float dailyPct = t212["daily_pct"] | 0.0f;
+            float pnlPct   = t212["pnl_pct"]  | 0.0f;
 
-    rtc_time_t t;
-    rtc_date_t d;
-    M5.RTC.getTime(&t);
-    M5.RTC.getDate(&d);
+            // Row 0: Today P&L | Winners Today | Losers Today
+            drawPctTile(0, 0, "TODAY", dailyPct);
 
-    // Time
-    char timeBuf[16];
-    snprintf(timeBuf, sizeof(timeBuf), "%02d:%02d", t.hour, t.min);
-    drawTile(0, 0, "UPDATED AT", timeBuf, "");
+            JsonArray winners = t212["winners"];
+            if (winners) drawListTile(1, 0, "WINNERS", winners);
 
-    // Date (vertical: weekday, day+month, year)
-    const char* weekdays[] = {"Sun","Mon","Tue","Wed","Thu","Fri","Sat"};
-    const char* months[] = {"","Jan","Feb","Mar","Apr","May","Jun",
-                            "Jul","Aug","Sep","Oct","Nov","Dec"};
-    int w = (d.week >= 0 && d.week <= 6) ? d.week : 0;
-    int x = 1 * TW, y = 0 * TH;
-    int cx = x + TW / 2;
-    drawLabel(cx, y + 18, "DATE");
-    canvas.setTextDatum(TC_DATUM);
-    canvas.setTextSize(4);
-    canvas.setTextColor(C_BLACK);
-    canvas.drawString(weekdays[w], cx, y + 65);
-    char dayMon[16];
-    snprintf(dayMon, sizeof(dayMon), "%d %s", d.day,
-             (d.mon >= 1 && d.mon <= 12) ? months[d.mon] : "???");
-    canvas.drawString(dayMon, cx, y + 115);
-    char yearBuf[8];
-    snprintf(yearBuf, sizeof(yearBuf), "%04d", d.year);
-    canvas.setTextSize(3);
-    canvas.setTextColor(C_DARK);
-    canvas.drawString(yearBuf, cx, y + 165);
+            JsonArray losers = t212["losers"];
+            if (losers) drawListTile(2, 0, "LOSERS", losers);
 
-    // Battery
-    char battBuf[8];
-    snprintf(battBuf, sizeof(battBuf), "%d%%", battPct);
-    drawTile(2, 0, "BATTERY", battBuf, "");
+            // Row 1: Overall P&L | Best Overall | Worst Overall
+            drawPctTile(0, 1, "OVERALL", pnlPct);
 
-    // ---- Row 1: Trading 212 | Moon | Sunrise/Sunset ----
+            JsonArray best = t212["best_overall"];
+            if (best) drawListTile(1, 1, "BEST OVERALL", best);
 
-    if (widgets.containsKey("trading212")) {
-        JsonObject t212 = widgets["trading212"];
-        drawTradingTile(0, 1, t212);
+            JsonArray worst = t212["worst_overall"];
+            if (worst) drawListTile(2, 1, "WORST OVERALL", worst);
+        }
     }
 
-    if (widgets.containsKey("moon")) {
-        JsonObject moon = widgets["moon"];
-        const char* name = moon["name"] | "Unknown";
-        float age   = moon["age_days"]          | 0.0f;
-        float illum = moon["illumination_pct"]   | 0.0f;
-        drawMoonTile(1, 1, name, illum, age);
-    }
-
-    if (widgets.containsKey("sun")) {
-        JsonObject sun = widgets["sun"];
-        const char* rise = sun["sunrise"] | "--:--";
-        const char* set  = sun["sunset"]  | "--:--";
-        drawSunTile(2, 1, rise, set);
-    } else {
-        drawTile(2, 1, "SUN", "--:--", "no data");
-    }
+    drawBatteryOverlay(battPct);
+    drawUpdatedOverlay();
 
     canvas.pushCanvas(0, 0, UPDATE_MODE_GC16);
 }
