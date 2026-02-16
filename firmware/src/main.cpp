@@ -3,8 +3,8 @@
  * Connects to WiFi, syncs time via NTP, fetches dashboard JSON
  * from Pi, displays Trading 212 P&L + moon phase on e-ink.
  *
- * Uses ESP32 deep sleep with timer + GPIO wake.
- * Push the side toggle (left or right) to wake and refresh immediately.
+ * Uses M5.shutdown() for timed wake (RTC alarm).
+ * On USB power, shutdown doesn't fully power off — loop() handles restart.
  */
 
 #include <M5EPD.h>
@@ -12,7 +12,8 @@
 #include <HTTPClient.h>
 #include <ArduinoJson.h>
 #include <cmath>
-#include <esp_sleep.h>
+#include <esp_task_wdt.h>
+#include <esp_wifi.h>
 #include "time.h"
 
 // ---- CONFIG (injected from .env at build time) ----
@@ -26,10 +27,17 @@
 #error "DASHBOARD_URL not set — check .env file in project root"
 #endif
 
-const char* wifi_ssid     = WIFI_SSID;
-const char* wifi_pass     = WIFI_PASS;
+const char* wifi_ssid = WIFI_SSID;
+const char* wifi_pass = WIFI_PASS;
 const char* dashboard_url = DASHBOARD_URL;
 const int   REFRESH_MINS  = 30;
+
+// Color map: 0=white, 15=black
+#define C_WHITE 0
+#define C_BLACK 15
+#define C_DARK  12
+#define C_MID   8
+#define C_LIGHT 3
 // ---------------------------------------------------
 
 M5EPD_Canvas canvas(&M5.EPD);
@@ -39,25 +47,37 @@ void drawDashboard(JsonObject& widgets, int battPct);
 void drawError(const char* msg);
 void drawNoWifi();
 
-// Enter deep sleep with timer + side toggle wake.
-// GPIO39 (left) and GPIO37 (right) are RTC-capable GPIOs.
 void goToSleep() {
-    M5.disableEPDPower();  // turn off e-ink controller to save power
-    esp_sleep_enable_timer_wakeup((uint64_t)REFRESH_MINS * 60 * 1000000ULL);
-    // Wake on side toggle left (GPIO39) or right (GPIO37) — either direction
-    esp_sleep_enable_ext1_wakeup((1ULL << 39) | (1ULL << 37), ESP_EXT1_WAKEUP_ALL_LOW);
-    esp_deep_sleep_start();
+    Serial.printf("goToSleep: M5.shutdown for %d min\n", REFRESH_MINS);
+    Serial.flush();
+    M5.shutdown(REFRESH_MINS * 60);
+    // M5.shutdown() won't return on battery (power cuts completely).
+    // On USB it returns because USB keeps ESP32 alive — loop() handles that.
 }
 
 void setup() {
     M5.begin();
-    M5.EPD.SetRotation(0);  // landscape, USB+rocker on top: 960 x 540
+    M5.EPD.SetRotation(0);
     M5.RTC.begin();
+
+    esp_task_wdt_init(30, true);
+    esp_task_wdt_add(NULL);
 
     uint32_t battMv = M5.getBatteryVoltage();
     int battPct = constrain(map(battMv, 3300, 4200, 0, 100), 0, 100);
 
+    // Boot screen
+    canvas.createCanvas(960, 540);
+    canvas.fillCanvas(C_WHITE);
+    canvas.setTextSize(4);
+    canvas.setTextColor(C_BLACK);
+    canvas.setTextDatum(MC_DATUM);
+    canvas.drawString("BOOTING...", 480, 270);
+    canvas.pushCanvas(0, 0, UPDATE_MODE_GC16);
+
     // Connect WiFi
+    WiFi.mode(WIFI_STA);
+    WiFi.setSleep(false);
     WiFi.begin(wifi_ssid, wifi_pass);
     int attempts = 0;
     while (WiFi.status() != WL_CONNECTED && attempts < 40) {
@@ -71,32 +91,61 @@ void setup() {
         return;
     }
 
-    syncTime();
+    // Status screens: one message each, size 5, full refresh to avoid ghosting
+    auto showStatus = [&](const char* msg, const char* sub = nullptr) {
+        canvas.fillCanvas(C_WHITE);
+        canvas.setTextSize(5);
+        canvas.setTextColor(C_BLACK);
+        canvas.setTextDatum(MC_DATUM);
+        canvas.drawString(msg, 480, sub ? 240 : 270);
+        if (sub) {
+            canvas.setTextSize(2);
+            canvas.setTextColor(C_MID);
+            canvas.drawString(sub, 480, 300);
+        }
+        canvas.pushCanvas(0, 0, UPDATE_MODE_GC16);  // full refresh for clean display
+    };
 
-    // Fetch dashboard JSON
+    showStatus("WiFi connected", WiFi.localIP().toString().c_str());
+    esp_task_wdt_reset();
+    delay(1500);
+
+    esp_wifi_set_max_tx_power(8);
+
+    showStatus("Preparing fetch...");
+    esp_task_wdt_reset();
+    delay(5000);
+    esp_task_wdt_reset();
+
+    showStatus("Fetching dashboard...");
+    esp_task_wdt_reset();
+
     HTTPClient http;
     http.begin(dashboard_url);
-    http.setTimeout(10000);
+    http.setConnectTimeout(5000);
+    http.setTimeout(5000);
     int httpCode = http.GET();
+    String payload;
+    if (httpCode == 200) {
+        payload = http.getString();
+    }
+    http.end();
 
     if (httpCode != 200) {
-        char errBuf[128];
+        char errBuf[64];
         snprintf(errBuf, sizeof(errBuf), "HTTP %d", httpCode);
         drawError(errBuf);
-        http.end();
-        WiFi.disconnect(true);
         goToSleep();
         return;
     }
 
-    String payload = http.getString();
-    http.end();
-    WiFi.disconnect(true);
-
-    JsonDocument doc;
+    payload.trim();  // remove BOM/whitespace
+    JsonDocument doc;  // ArduinoJson 7 auto-sizes; 2048B enough for ~350B dashboard
     DeserializationError err = deserializeJson(doc, payload);
     if (err) {
-        drawError("JSON parse failed");
+        char errBuf[80];
+        snprintf(errBuf, sizeof(errBuf), "Parse: %s (%d)", err.c_str(), payload.length());
+        drawError(errBuf);
         goToSleep();
         return;
     }
@@ -104,14 +153,21 @@ void setup() {
     JsonObject widgets = doc["widgets"];
     drawDashboard(widgets, battPct);
 
+    syncTime();  // after draw — NTP to internet can hang on battery; show dashboard first
+    WiFi.disconnect(true);
     goToSleep();
 }
 
 void loop() {
-    // Should never reach here — goToSleep() doesn't return.
-    // Safety fallback: wait and restart.
-    delay(60000);
-    ESP.restart();
+    // On USB, M5.shutdown() doesn't fully power off — the ESP32 stays alive.
+    // Re-call shutdown every 30s to keep the RTC alarm fresh,
+    // and restart if we've been awake long enough.
+    static unsigned long loopStart = millis();
+    if (millis() - loopStart > (unsigned long)REFRESH_MINS * 60 * 1000) {
+        ESP.restart();  // force a fresh cycle
+    }
+    M5.shutdown(REFRESH_MINS * 60);  // re-arm RTC alarm
+    delay(30000);
 }
 
 // ---- NTP ----
@@ -135,13 +191,6 @@ void syncTime() {
 }
 
 // ---- Drawing ----
-
-// Color map: 0=white, 15=black
-#define C_WHITE 0
-#define C_BLACK 15
-#define C_DARK  12
-#define C_MID   8
-#define C_LIGHT 3
 
 // Tile grid: 3 columns x 2 rows
 #define TW   320   // tile width  (960 / 3)
@@ -259,7 +308,6 @@ void drawTradingTile(int col, int row, JsonObject& t212) {
     }
 
     float pnlPct   = t212["pnl_pct"]   | 0.0f;
-    float dailyPnl = t212["daily_pnl"]  | 0.0f;
     float dailyPct = t212["daily_pct"]  | 0.0f;
 
     // Overall P&L
@@ -277,22 +325,16 @@ void drawTradingTile(int col, int row, JsonObject& t212) {
     // Divider
     canvas.drawFastHLine(x + 30, y + 130, TW - 60, C_LIGHT);
 
-    // Today
+    // Today (percent only)
     canvas.setTextSize(2);
     canvas.setTextColor(C_MID);
     canvas.drawString("today", cx, y + 140);
 
-    char dailyBuf[16];
-    snprintf(dailyBuf, sizeof(dailyBuf), "%+.2f", dailyPnl);
-    canvas.setTextSize(5);
-    canvas.setTextColor(C_BLACK);
-    canvas.drawString(dailyBuf, cx, y + 162);
-
     char dailyPctBuf[16];
     snprintf(dailyPctBuf, sizeof(dailyPctBuf), "%+.2f%%", dailyPct);
-    canvas.setTextSize(3);
-    canvas.setTextColor(C_DARK);
-    canvas.drawString(dailyPctBuf, cx, y + 230);
+    canvas.setTextSize(5);
+    canvas.setTextColor(C_BLACK);
+    canvas.drawString(dailyPctBuf, cx, y + 195);
 }
 
 // Sunrise/Sunset tile

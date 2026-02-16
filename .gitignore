@@ -1,4 +1,5 @@
 .env
+.DS_Store
 .venv/
 __pycache__/
 *.pyc
@@ -13,3 +14,6 @@ server/dashboard.json
 server/daily_baseline.json
 server/cron.log
 server/http.log
+
+# Backup files
+*.bak
