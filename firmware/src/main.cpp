@@ -183,9 +183,10 @@ void syncTime() {
         M5.RTC.setTime(&rtcTime);
 
         rtc_date_t rtcDate;
-        rtcDate.year = timeinfo.tm_year + 1900;
-        rtcDate.mon  = timeinfo.tm_mon + 1;
-        rtcDate.day  = timeinfo.tm_mday;
+        rtcDate.year  = timeinfo.tm_year + 1900;
+        rtcDate.mon   = timeinfo.tm_mon + 1;
+        rtcDate.day   = timeinfo.tm_mday;
+        rtcDate.week  = timeinfo.tm_wday;  // 0=Sun .. 6=Sat
         M5.RTC.setDate(&rtcDate);
     }
 }
@@ -379,15 +380,27 @@ void drawDashboard(JsonObject& widgets, int battPct) {
     snprintf(timeBuf, sizeof(timeBuf), "%02d:%02d", t.hour, t.min);
     drawTile(0, 0, "UPDATED AT", timeBuf, "");
 
-    // Date
+    // Date (vertical: weekday, day+month, year)
+    const char* weekdays[] = {"Sun","Mon","Tue","Wed","Thu","Fri","Sat"};
     const char* months[] = {"","Jan","Feb","Mar","Apr","May","Jun",
                             "Jul","Aug","Sep","Oct","Nov","Dec"};
-    char dateBuf[24];
-    snprintf(dateBuf, sizeof(dateBuf), "%d %s", d.day,
+    int w = (d.week >= 0 && d.week <= 6) ? d.week : 0;
+    int x = 1 * TW, y = 0 * TH;
+    int cx = x + TW / 2;
+    drawLabel(cx, y + 18, "DATE");
+    canvas.setTextDatum(TC_DATUM);
+    canvas.setTextSize(4);
+    canvas.setTextColor(C_BLACK);
+    canvas.drawString(weekdays[w], cx, y + 65);
+    char dayMon[16];
+    snprintf(dayMon, sizeof(dayMon), "%d %s", d.day,
              (d.mon >= 1 && d.mon <= 12) ? months[d.mon] : "???");
+    canvas.drawString(dayMon, cx, y + 115);
     char yearBuf[8];
     snprintf(yearBuf, sizeof(yearBuf), "%04d", d.year);
-    drawTile(1, 0, "DATE", dateBuf, yearBuf);
+    canvas.setTextSize(3);
+    canvas.setTextColor(C_DARK);
+    canvas.drawString(yearBuf, cx, y + 165);
 
     // Battery
     char battBuf[8];
