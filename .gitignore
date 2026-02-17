@@ -4,9 +4,14 @@
 __pycache__/
 *.pyc
 
+# Project notes (contains personal IPs, SSH details, etc.)
+claude.md
+CLAUDE.md
+
 # PlatformIO
 firmware/.pio/
 firmware/.vscode/
+firmware/platformio_override.ini
 
 # Server runtime data
 server/.venv/
