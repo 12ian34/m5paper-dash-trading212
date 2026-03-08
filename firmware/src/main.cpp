@@ -249,7 +249,23 @@ void drawPctTile(int col, int row, const char* label, float pct) {
     canvas.drawString(pctBuf, cx, y + TH / 2 + 15);
 }
 
-// List tile showing up to 4 stocks with ticker and % change
+String truncateToWidth(const char* text, int textSize, int maxWidth) {
+    String out = (text && text[0]) ? String(text) : String("???");
+    canvas.setTextSize(textSize);
+    if (canvas.textWidth(out.c_str()) <= maxWidth) return out;
+
+    const String ellipsis = ".";
+    while (out.length() > 0) {
+        out.remove(out.length() - 1);
+        String candidate = out + ellipsis;
+        if (canvas.textWidth(candidate.c_str()) <= maxWidth) {
+            return candidate;
+        }
+    }
+    return ellipsis;
+}
+
+// List tile showing up to 4 stocks with company name + % change
 void drawListTile(int col, int row, const char* title, JsonArray items) {
     int x = col * TW;
     int y = row * TH;
@@ -261,23 +277,36 @@ void drawListTile(int col, int row, const char* title, JsonArray items) {
     int count = items.size() < 4 ? (int)items.size() : 4;
 
     for (int i = 0; i < count; i++) {
-        const char* ticker = items[i]["ticker"] | "???";
+        const char* name = items[i]["ticker"] | "???";
         float pct = items[i]["pct"] | 0.0f;
 
         char pctBuf[16];
-        snprintf(pctBuf, sizeof(pctBuf), "%+.1f%%", pct);
+        snprintf(pctBuf, sizeof(pctBuf), "%+.0f%%", pct);
 
-        // Ticker left-aligned
-        canvas.setTextDatum(TL_DATUM);
+        const int nameLeft = x + 15;
+        const int pctRight = x + TW - 15;
+        const int colGap = 10;
+
+        // Keep the % at a consistent size and fit names into the remaining width.
         canvas.setTextSize(3);
+        int pctWidth = canvas.textWidth(pctBuf);
+        int nameMaxWidth = pctRight - pctWidth - colGap - nameLeft;
+        if (nameMaxWidth < 20) nameMaxWidth = 20;
+
+        const int nameSize = 2;
+        String nameText = truncateToWidth(name, nameSize, nameMaxWidth);
+
+        // Name left-aligned (fixed size, truncated to fit before % column)
+        canvas.setTextDatum(TL_DATUM);
+        canvas.setTextSize(nameSize);
         canvas.setTextColor(C_BLACK);
-        canvas.drawString(ticker, x + 15, rowY);
+        canvas.drawString(nameText.c_str(), nameLeft, rowY);
 
         // Percent right-aligned
         canvas.setTextDatum(TR_DATUM);
         canvas.setTextSize(3);
         canvas.setTextColor(C_DARK);
-        canvas.drawString(pctBuf, x + TW - 15, rowY);
+        canvas.drawString(pctBuf, pctRight, rowY);
 
         rowY += spacing;
     }
