@@ -212,26 +212,26 @@ void drawLabel(int cx, int y, const char* label) {
     canvas.drawString(label, cx, y);
 }
 
-// Tiny battery percentage in top-right corner
-void drawBatteryOverlay(int battPct) {
-    char buf[8];
-    snprintf(buf, sizeof(buf), "%d%%", battPct);
-    canvas.setTextDatum(TR_DATUM);
-    canvas.setTextSize(2);
-    canvas.setTextColor(C_MID);
-    canvas.drawString(buf, 950, 8);
-}
-
-// Small "Updated HH:MM" at bottom center
-void drawUpdatedOverlay() {
+// Small corner inlays: updated time (bottom-left) + battery (bottom-right)
+void drawInlays(int battPct) {
     rtc_time_t t;
     M5.RTC.getTime(&t);
-    char buf[32];
-    snprintf(buf, sizeof(buf), "Updated %02d:%02d", t.hour, t.min);
-    canvas.setTextDatum(BC_DATUM);
+
+    // Bottom-left: updated time
+    char timeBuf[24];
+    snprintf(timeBuf, sizeof(timeBuf), "updated: %02d:%02d", t.hour, t.min);
+    canvas.setTextDatum(BL_DATUM);
     canvas.setTextSize(2);
     canvas.setTextColor(C_MID);
-    canvas.drawString(buf, 480, 532);
+    canvas.drawString(timeBuf, 8, 534);
+
+    // Bottom-right: battery
+    char battBuf[16];
+    snprintf(battBuf, sizeof(battBuf), "%d%%", battPct);
+    canvas.setTextDatum(BR_DATUM);
+    canvas.setTextSize(2);
+    canvas.setTextColor(C_MID);
+    canvas.drawString(battBuf, 952, 534);
 }
 
 // Big percentage tile (used for overall P&L and today P&L)
@@ -323,8 +323,7 @@ void drawDashboard(JsonObject& widgets, int battPct) {
         }
     }
 
-    drawBatteryOverlay(battPct);
-    drawUpdatedOverlay();
+    drawInlays(battPct);
 
     canvas.pushCanvas(0, 0, UPDATE_MODE_GC16);
 }

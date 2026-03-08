@@ -51,6 +51,19 @@ def to_plain_symbol(ticker: str) -> str:
     return base
 
 
+def to_display_name(instrument: dict) -> str:
+    """Return a readable company name from a Trading212 instrument."""
+    name = instrument.get("name")
+    if isinstance(name, str) and name.strip():
+        clean_name = name.strip()
+        if len(clean_name) > 24:
+            return f"{clean_name[:21]}..."
+        return clean_name
+
+    ticker = instrument.get("ticker", "")
+    return to_plain_symbol(ticker) if isinstance(ticker, str) else "???"
+
+
 def fetch_trading212() -> dict:
     headers = t212_auth_header()
     with httpx.Client(timeout=15.0) as client:
@@ -77,9 +90,13 @@ def fetch_trading212() -> dict:
 
     if baseline.get("date") != today:
         # New day — save current values as baselines
-        pos_baselines = {
-            p["instrument"]["ticker"]: p["currentPrice"] for p in positions
-        }
+        pos_baselines = {}
+        for p in positions:
+            instrument = p.get("instrument", {})
+            ticker = instrument.get("ticker")
+            if not isinstance(ticker, str):
+                continue
+            pos_baselines[ticker] = p.get("currentPrice", 0)
         save_daily_baseline(
             {"date": today, "value": total_value, "positions": pos_baselines}
         )
@@ -94,7 +111,10 @@ def fetch_trading212() -> dict:
         # Track any new positions bought today
         updated = False
         for p in positions:
-            t = p["instrument"]["ticker"]
+            instrument = p.get("instrument", {})
+            t = instrument.get("ticker")
+            if not isinstance(t, str):
+                continue
             if t not in pos_baselines:
                 pos_baselines[t] = p["currentPrice"]
                 updated = True
@@ -106,8 +126,11 @@ def fetch_trading212() -> dict:
     daily_movers = []
     overall_movers = []
     for p in positions:
-        ticker = p["instrument"]["ticker"]
-        symbol = to_plain_symbol(ticker)
+        instrument = p.get("instrument", {})
+        ticker = instrument.get("ticker", "")
+        if not isinstance(ticker, str):
+            continue
+        label = to_display_name(instrument)
         current_price = p["currentPrice"]
 
         # Daily % change (vs start-of-day baseline)
@@ -116,14 +139,14 @@ def fetch_trading212() -> dict:
             daily_change = (current_price - baseline_price) / baseline_price * 100
         else:
             daily_change = 0.0
-        daily_movers.append({"ticker": symbol, "pct": round(daily_change, 2)})
+        daily_movers.append({"ticker": label, "pct": round(daily_change, 2)})
 
         # Overall % change (vs purchase price, in account currency)
         wi = p.get("walletImpact", {})
         cost = wi.get("totalCost", 0)
         pnl = wi.get("unrealizedProfitLoss", 0)
         overall_change = (pnl / cost * 100) if cost else 0.0
-        overall_movers.append({"ticker": symbol, "pct": round(overall_change, 2)})
+        overall_movers.append({"ticker": label, "pct": round(overall_change, 2)})
 
     # Daily: top 4 winners, bottom 4 losers
     daily_movers.sort(key=lambda x: x["pct"], reverse=True)
