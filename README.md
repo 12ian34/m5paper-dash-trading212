@@ -42,62 +42,21 @@ Any Pi that can run Python and stay on your network. Serves the dashboard JSON o
 
 ## Setup
 
-### 1. Clone & configure
+### 1. Get Trading 212 API credentials
 
-```bash
-git clone https://github.com/12ian34/m5paper-dash-trading212.git
-cd m5paper-dash-trading212
-cp .env.example .env
-```
+In the Trading 212 app, open **Settings -> API** and create your API key + secret.
 
-Edit `.env` with your details:
-
-```
-TRADING212_API_KEY=your_api_key
-TRADING212_API_SECRET=your_api_secret
-WIFI_SSID=your_wifi_ssid
-WIFI_PASS=your_wifi_password
-DASHBOARD_URL=http://your-pi-ip:8080/dashboard.json
-```
-
-Get your Trading 212 API credentials from the app: **Settings → API** (requires a live account).
-
-### 2. Set up the Pi
-
-Use `git` on the Pi (preferred) or `scp`.
-
-Preferred (from the Pi):
-
-```bash
-git clone https://github.com/12ian34/m5paper-dash-trading212.git
-cd m5paper-dash-trading212/server
-uv venv
-uv sync
-M5_DASH_SERVER_DIR="$(pwd)" bash setup_cron.sh
-```
-
-If you deploy files by copy, use your own target path and then run:
-
-```bash
-cd /path/to/your/checkout/server
-uv venv
-uv sync
-M5_DASH_SERVER_DIR="$(pwd)" bash setup_cron.sh
-```
-
-This installs two cron jobs:
-- **Every 30 min** (`29,59 * * * *`): fetches your T212 data and writes `dashboard.json`
-- **On boot** (`@reboot`): starts the HTTP server on port 8080
-
-### 3. Build & flash the firmware
+### 2. Build & flash the firmware
 
 You need [PlatformIO](https://platformio.org/install) and a Python venv:
 
 ```bash
-python3 -m venv .venv
+uv venv .venv
 source .venv/bin/activate
-pip install platformio
+uv pip install pip platformio
 ```
+
+Before building, make sure your local checkout has a populated `.env` (`cp .env.example .env`) with `TRADING212_API_KEY`, `TRADING212_API_SECRET`, `WIFI_SSID`, `WIFI_PASS`, and `DASHBOARD_URL`.
 
 Connect the M5Paper via USB-C, then:
 
@@ -114,7 +73,38 @@ upload_port = /dev/cu.usbserial-XXXXX
 monitor_port = /dev/cu.usbserial-XXXXX
 ```
 
-### 4. First boot
+### 3. On the Raspberry Pi: clone and configure `.env`
+
+```bash
+git clone https://github.com/12ian34/m5paper-dash-trading212.git
+cd m5paper-dash-trading212
+cp .env.example .env
+```
+
+Edit `.env` in that Pi checkout:
+
+```
+TRADING212_API_KEY=your_api_key
+TRADING212_API_SECRET=your_api_secret
+WIFI_SSID=your_wifi_ssid
+WIFI_PASS=your_wifi_password
+DASHBOARD_URL=http://your-pi-ip:8080/dashboard.json
+```
+
+### 4. On the Raspberry Pi: sync and install cron
+
+```bash
+uv sync
+bash server/setup_cron.sh
+```
+
+`setup_cron.sh` auto-detects its own `server/` path and works from fish/zsh/bash when run as `bash server/setup_cron.sh`.
+
+This installs two cron jobs:
+- **Every 30 min** (`29,59 * * * *`): fetches your T212 data and writes `dashboard.json`
+- **On boot** (`@reboot`): starts the HTTP server on port 8080
+
+### 5. First boot
 
 Once flashed, the M5Paper will:
 
