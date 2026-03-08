@@ -15,13 +15,10 @@ if [ ! -f "$UPDATE_SCRIPT" ] || [ ! -f "$SERVE_SCRIPT" ]; then
     exit 1
 fi
 
-# Ensure venv exists
-if [ ! -f "$VENV" ]; then
-    echo "Setting up venv..."
-    cd "$DIR"
-    uv venv
-    uv pip install -r requirements.txt
-fi
+# Ensure .venv exists and dependencies are up to date
+echo "Syncing Python environment with uv..."
+cd "$DIR"
+uv sync
 
 # Build cron entries
 UPDATE_JOB="29,59 * * * * cd $DIR && $VENV $UPDATE_SCRIPT >> $DIR/cron.log 2>&1"

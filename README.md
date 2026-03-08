@@ -64,20 +64,25 @@ Get your Trading 212 API credentials from the app: **Settings → API** (require
 
 ### 2. Set up the Pi
 
-Copy the server files to your Pi:
+Use `git` on the Pi (preferred) or `scp`.
+
+Preferred (from the Pi):
 
 ```bash
-scp server/update_dashboard.py server/serve.py server/setup_cron.sh .env user@your-pi:~/m5-trading/server/
-scp .env user@your-pi:~/m5-trading/
+git clone https://github.com/12ian34/m5paper-dash-trading212.git
+cd m5paper-dash-trading212/server
+uv venv
+uv sync
+M5_DASH_SERVER_DIR="$(pwd)" bash setup_cron.sh
 ```
 
-On the Pi, set up the venv and cron jobs:
+If you deploy files by copy, use your own target path and then run:
 
 ```bash
-cd ~/m5-trading/server
-python3 -m venv .venv
-.venv/bin/pip install -r requirements.txt
-bash setup_cron.sh
+cd /path/to/your/checkout/server
+uv venv
+uv sync
+M5_DASH_SERVER_DIR="$(pwd)" bash setup_cron.sh
 ```
 
 This installs two cron jobs:
@@ -182,7 +187,7 @@ Trading 212 doesn't have a "daily change" endpoint. The Pi tracks it:
 │   ├── update_dashboard.py    # Fetches T212 data, writes dashboard.json
 │   ├── serve.py               # Threaded HTTP file server
 │   ├── setup_cron.sh          # Installs cron jobs on the Pi
-│   └── requirements.txt       # Python dependencies (httpx, python-dotenv)
+│   └── pyproject.toml         # Python dependencies for `uv sync`
 ├── .env.example               # Template for required environment variables
 └── README.md
 ```
@@ -210,6 +215,15 @@ Trading 212 doesn't have a "daily change" endpoint. The Pi tracks it:
 - Run `ls /dev/cu.usb*` to find your device
 - Create `firmware/platformio_override.ini` with the correct port
 - Try a different USB-C cable (some are charge-only)
+
+### Cron maintenance
+
+- See only dashboard cron lines:  
+  `crontab -l | grep -E 'update_dashboard.py|serve.py 8080'`
+- Remove old dashboard cron entries before reinstalling:
+  `crontab -l | grep -v -E 'update_dashboard\\.py|serve\\.py 8080|http\\.server 8080' | crontab -`
+- Reinstall cleanly from repo checkout:
+  `cd /path/to/your/checkout/server && bash setup_cron.sh`
 
 ## Notes
 

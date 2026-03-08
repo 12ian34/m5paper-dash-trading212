@@ -1,0 +1,10 @@
+[project]
+name = "m5paper-dash-server"
+version = "0.1.0"
+description = "Server scripts for M5Paper Trading 212 dashboard"
+requires-python = ">=3.10"
+dependencies = [
+  "httpx>=0.28.0",
+  "python-dotenv>=1.0.0",
+]
+
