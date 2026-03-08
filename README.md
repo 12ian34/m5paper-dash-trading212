@@ -94,11 +94,12 @@ DASHBOARD_URL=http://your-pi-ip:8080/dashboard.json
 ### 4. On the Raspberry Pi: sync and install cron
 
 ```bash
+cd server
 uv sync
-bash server/setup_cron.sh
+bash setup_cron.sh
 ```
 
-`setup_cron.sh` auto-detects its own `server/` path and works from fish/zsh/bash when run as `bash server/setup_cron.sh`.
+`setup_cron.sh` auto-detects its own `server/` path and works from fish/zsh/bash when run as `bash setup_cron.sh`.
 
 This installs two cron jobs:
 - **Every 30 min** (`29,59 * * * *`): fetches your T212 data and writes `dashboard.json`
