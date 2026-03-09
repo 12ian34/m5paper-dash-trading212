@@ -6,7 +6,7 @@ Run via cron at :29 and :59 past every hour.
 import base64
 import json
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import httpx
 from dotenv import load_dotenv
@@ -19,7 +19,9 @@ TRADING212_API_SECRET = os.environ["TRADING212_API_SECRET"]
 TRADING212_BASE = "https://live.trading212.com/api/v0"
 
 DASHBOARD_PATH = os.path.join(SCRIPT_DIR, "dashboard.json")
-DAILY_BASELINE_PATH = os.path.join(SCRIPT_DIR, "daily_baseline.json")
+ROLLING_BASELINE_PATH = os.path.join(SCRIPT_DIR, "rolling_24h_baseline.json")
+ROLLING_WINDOW_HOURS = 24
+HISTORY_RETENTION_HOURS = 72
 
 
 def t212_auth_header() -> dict[str, str]:
@@ -29,16 +31,148 @@ def t212_auth_header() -> dict[str, str]:
     return {"Authorization": f"Basic {creds}"}
 
 
-def load_daily_baseline() -> dict:
-    if os.path.exists(DAILY_BASELINE_PATH):
-        with open(DAILY_BASELINE_PATH) as f:
-            return json.load(f)
-    return {}
+def parse_snapshot_time(raw_ts: str) -> datetime | None:
+    ts = raw_ts.strip()
+    if ts.endswith("Z"):
+        ts = f"{ts[:-1]}+00:00"
+    try:
+        parsed = datetime.fromisoformat(ts)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
 
 
-def save_daily_baseline(data: dict) -> None:
-    with open(DAILY_BASELINE_PATH, "w") as f:
-        json.dump(data, f)
+def load_rolling_history() -> list[dict]:
+    if not os.path.exists(ROLLING_BASELINE_PATH):
+        return []
+
+    try:
+        with open(ROLLING_BASELINE_PATH) as f:
+            data = json.load(f)
+    except (json.JSONDecodeError, OSError):
+        return []
+
+    raw_snapshots = []
+    if isinstance(data, dict) and isinstance(data.get("snapshots"), list):
+        raw_snapshots = data["snapshots"]
+    elif isinstance(data, list):
+        raw_snapshots = data
+    elif isinstance(data, dict) and "value" in data and "positions" in data:
+        # Legacy daily-baseline format: treat it as a single seed snapshot.
+        legacy_date = data.get("date")
+        if isinstance(legacy_date, str):
+            seed_ts = f"{legacy_date}T00:00:00+00:00"
+        else:
+            seed_ts = datetime.now(timezone.utc).isoformat()
+        raw_snapshots = [
+            {
+                "timestamp": seed_ts,
+                "value": data.get("value", 0),
+                "positions": data.get("positions", {}),
+            }
+        ]
+
+    clean_snapshots = []
+    for snapshot in raw_snapshots:
+        if not isinstance(snapshot, dict):
+            continue
+        raw_ts = snapshot.get("timestamp") or snapshot.get("ts")
+        if not isinstance(raw_ts, str):
+            continue
+        parsed_ts = parse_snapshot_time(raw_ts)
+        if parsed_ts is None:
+            continue
+
+        raw_value = snapshot.get("value")
+        if not isinstance(raw_value, (int, float)):
+            continue
+
+        raw_positions = snapshot.get("positions")
+        clean_positions: dict[str, float] = {}
+        if isinstance(raw_positions, dict):
+            for ticker, price in raw_positions.items():
+                if isinstance(ticker, str) and isinstance(price, (int, float)):
+                    clean_positions[ticker] = float(price)
+
+        clean_snapshots.append(
+            {
+                "timestamp": parsed_ts.isoformat(),
+                "value": float(raw_value),
+                "positions": clean_positions,
+            }
+        )
+
+    clean_snapshots.sort(key=lambda s: s["timestamp"])
+    return clean_snapshots
+
+
+def save_rolling_history(snapshots: list[dict]) -> None:
+    with open(ROLLING_BASELINE_PATH, "w") as f:
+        json.dump({"snapshots": snapshots}, f)
+
+
+def build_position_price_map(positions: list[dict]) -> dict[str, float]:
+    price_map: dict[str, float] = {}
+    for position in positions:
+        if not isinstance(position, dict):
+            continue
+        instrument = position.get("instrument", {})
+        ticker = instrument.get("ticker")
+        price = position.get("currentPrice")
+        if isinstance(ticker, str) and isinstance(price, (int, float)):
+            price_map[ticker] = float(price)
+    return price_map
+
+
+def append_snapshot(
+    history: list[dict], now_utc: datetime, total_value: float, positions: list[dict]
+) -> list[dict]:
+    history.append(
+        {
+            "timestamp": now_utc.isoformat(),
+            "value": float(total_value),
+            "positions": build_position_price_map(positions),
+        }
+    )
+
+    cutoff = now_utc - timedelta(hours=HISTORY_RETENTION_HOURS)
+    trimmed = []
+    for snapshot in history:
+        ts = snapshot.get("timestamp")
+        if not isinstance(ts, str):
+            continue
+        parsed_ts = parse_snapshot_time(ts)
+        if parsed_ts is None:
+            continue
+        if parsed_ts >= cutoff:
+            trimmed.append(snapshot)
+
+    trimmed.sort(key=lambda s: s["timestamp"])
+    return trimmed
+
+
+def pick_rolling_baseline(history: list[dict], now_utc: datetime) -> dict | None:
+    if not history:
+        return None
+
+    target = now_utc - timedelta(hours=ROLLING_WINDOW_HOURS)
+    candidate = None
+    for snapshot in history:
+        ts = snapshot.get("timestamp")
+        if not isinstance(ts, str):
+            continue
+        parsed_ts = parse_snapshot_time(ts)
+        if parsed_ts is None:
+            continue
+        if parsed_ts <= target:
+            candidate = snapshot
+        else:
+            break
+
+    # Warm-up mode (<24h history): fall back to earliest available snapshot.
+    return candidate if candidate is not None else history[0]
 
 
 def to_plain_symbol(ticker: str) -> str:
@@ -83,46 +217,25 @@ def fetch_trading212() -> dict:
     unrealised_pnl = investments.get("unrealizedProfitLoss", 0)
     pnl_pct = (unrealised_pnl / total_cost * 100) if total_cost else 0
 
-    # Daily tracking (account-level + per-position baselines)
+    # Rolling 24h tracking (account-level + per-position baselines)
     total_value = account.get("totalValue", 0)
-    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    baseline = load_daily_baseline()
+    now_utc = datetime.now(timezone.utc)
+    history = load_rolling_history()
+    history = append_snapshot(history, now_utc, total_value, positions)
+    save_rolling_history(history)
+    baseline = pick_rolling_baseline(history, now_utc)
 
-    if baseline.get("date") != today:
-        # New day — save current values as baselines
-        pos_baselines = {}
-        for p in positions:
-            instrument = p.get("instrument", {})
-            ticker = instrument.get("ticker")
-            if not isinstance(ticker, str):
-                continue
-            pos_baselines[ticker] = p.get("currentPrice", 0)
-        save_daily_baseline(
-            {"date": today, "value": total_value, "positions": pos_baselines}
-        )
+    if baseline is None:
         daily_pnl = 0.0
         daily_pct = 0.0
+        pos_baselines = {}
     else:
-        baseline_value = baseline["value"]
+        baseline_value = baseline.get("value", 0)
         daily_pnl = total_value - baseline_value
         daily_pct = (daily_pnl / baseline_value * 100) if baseline_value else 0
         pos_baselines = baseline.get("positions", {})
 
-        # Track any new positions bought today
-        updated = False
-        for p in positions:
-            instrument = p.get("instrument", {})
-            t = instrument.get("ticker")
-            if not isinstance(t, str):
-                continue
-            if t not in pos_baselines:
-                pos_baselines[t] = p["currentPrice"]
-                updated = True
-        if updated:
-            baseline["positions"] = pos_baselines
-            save_daily_baseline(baseline)
-
-    # Per-position daily change + overall change
+    # Per-position 24h change + overall change
     daily_movers = []
     overall_movers = []
     for p in positions:
@@ -133,7 +246,7 @@ def fetch_trading212() -> dict:
         label = to_display_name(instrument)
         current_price = p["currentPrice"]
 
-        # Daily % change (vs start-of-day baseline)
+        # 24h % change (vs rolling baseline)
         baseline_price = pos_baselines.get(ticker)
         if baseline_price and baseline_price > 0:
             daily_change = (current_price - baseline_price) / baseline_price * 100
@@ -148,7 +261,7 @@ def fetch_trading212() -> dict:
         overall_change = (pnl / cost * 100) if cost else 0.0
         overall_movers.append({"ticker": label, "pct": round(overall_change, 2)})
 
-    # Daily: top 4 winners, bottom 4 losers
+    # 24h window: top 4 winners, bottom 4 losers
     daily_movers.sort(key=lambda x: x["pct"], reverse=True)
     winners = daily_movers[:4]
     losers = sorted(daily_movers[max(0, len(daily_movers) - 4):], key=lambda x: x["pct"])
@@ -162,6 +275,7 @@ def fetch_trading212() -> dict:
 
     return {
         "pnl_pct": round(pnl_pct, 2),
+        # Keep field name for firmware compatibility; value is now rolling 24h.
         "daily_pct": round(daily_pct, 2),
         "winners": winners,
         "losers": losers,

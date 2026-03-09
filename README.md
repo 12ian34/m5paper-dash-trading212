@@ -12,8 +12,8 @@ Trading 212 API ──► Raspberry Pi (cron + HTTP server) ──► WiFi ─�
 
 ![M5Paper Trading Dashboard](IMG_2615.JPG)
 
-- **Today P&L** — portfolio daily % change
-- **Winners / Losers** — top & bottom 4 stocks by daily % change
+- **24H P&L** — portfolio rolling 24-hour % change
+- **Winners / Losers** — top & bottom 4 stocks by rolling 24-hour % change
 - **Overall P&L** — total unrealised P&L %
 - **Best / Worst Overall** — top & bottom 4 stocks by all-time % change
 - **Battery** — tiny overlay, top-right corner
@@ -142,19 +142,20 @@ On USB power, `M5.shutdown()` can't fully cut power (USB keeps the ESP32 alive).
 
 1. Fetches account summary from `GET /equity/account/summary`
 2. Fetches positions from `GET /equity/positions`
-3. Computes daily % change using a baseline file (`daily_baseline.json`) that resets each day
-4. Computes per-stock daily % and all-time % change
+3. Stores snapshot history in `rolling_24h_baseline.json` and computes rolling 24-hour % change
+4. Computes per-stock rolling 24-hour % and all-time % change
 5. Writes `dashboard.json` with top 4 / bottom 4 for each category
 
 `serve.py` is a threaded HTTP server that serves the JSON file. It uses `ThreadingTCPServer` because Python's built-in `http.server` is single-threaded and hangs when the ESP32 makes incomplete connections.
 
-### Daily baseline tracking
+### Rolling 24-hour tracking
 
-Trading 212 doesn't have a "daily change" endpoint. The Pi tracks it:
+Trading 212 doesn't have a native rolling "24-hour portfolio change" endpoint. The Pi tracks it:
 
-- First run of the day: saves current portfolio value + per-position prices as the baseline
-- Subsequent runs: computes daily change vs the baseline
-- The baseline resets automatically at midnight UTC
+- Every cron run appends a timestamped snapshot: portfolio value + per-position prices
+- It compares "now" to the snapshot from ~24 hours ago
+- It keeps ~72 hours of snapshots on disk (`rolling_24h_baseline.json`)
+- During warm-up (<24h history), it uses the earliest available snapshot
 
 ## Battery life
 
@@ -195,9 +196,9 @@ Trading 212 doesn't have a "daily change" endpoint. The Pi tracks it:
 - Verify `DASHBOARD_URL` in `.env` matches the Pi's IP
 - Ensure the M5Paper and Pi are on the same network
 
-**Dashboard shows 0% for all daily movers**
-- Normal on the first run of each day (baseline just set)
-- Will populate on the next cron run when market prices change
+**Dashboard shows 0% for all 24h movers**
+- Normal right after first setup/redeploy (not enough 24h history yet)
+- Also normal when markets are closed and prices haven't changed
 
 **Screen stays on "Fetching dashboard..."**
 - If on battery: this was a known issue caused by NTP blocking before draw. The firmware now runs NTP *after* drawing. If you see this, ensure you're running the latest firmware.

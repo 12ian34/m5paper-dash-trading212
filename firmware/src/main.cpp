@@ -234,7 +234,7 @@ void drawInlays(int battPct) {
     canvas.drawString(battBuf, 952, 534);
 }
 
-// Big percentage tile (used for overall P&L and today P&L)
+// Big percentage tile (used for overall P&L and 24h P&L)
 void drawPctTile(int col, int row, const char* label, float pct) {
     int x = col * TW;
     int y = row * TH;
@@ -332,8 +332,8 @@ void drawDashboard(JsonObject& widgets, int battPct) {
             float dailyPct = t212["daily_pct"] | 0.0f;
             float pnlPct   = t212["pnl_pct"]  | 0.0f;
 
-            // Row 0: Today P&L | Winners Today | Losers Today
-            drawPctTile(0, 0, "TODAY", dailyPct);
+            // Row 0: 24h P&L | Winners | Losers
+            drawPctTile(0, 0, "24H", dailyPct);
 
             JsonArray winners = t212["winners"];
             if (winners) drawListTile(1, 0, "WINNERS", winners);
