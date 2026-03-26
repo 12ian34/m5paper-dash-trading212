@@ -12,12 +12,12 @@ Trading 212 API ──► Raspberry Pi (cron + HTTP server) ──► WiFi ─�
 
 ![M5Paper Trading Dashboard](IMG_2615.JPG)
 
-- **24H P&L** — portfolio rolling 24-hour % change
-- **Winners / Losers** — top & bottom 4 stocks by rolling 24-hour % change
-- **Overall P&L** — total unrealised P&L %
-- **Best / Worst Overall** — top & bottom 4 stocks by all-time % change
-- **Battery** — tiny overlay, top-right corner
-- **Updated** — last refresh time, bottom-center
+- **24H P&L** — portfolio rolling 24-hour % change with sparkline chart
+- **Winners / Losers** — top & bottom 8 stocks by rolling 24-hour % change
+- **Overall P&L** — total unrealised P&L % with sparkline chart (one point per day, grows over time)
+- **Best / Worst Overall** — top & bottom 8 stocks by all-time % change
+- **Updated** — last refresh time, bottom-left corner
+- **Battery** — percentage, bottom-right corner
 
 ## Hardware
 
@@ -118,6 +118,10 @@ Once flashed, the M5Paper will:
 
 It repeats this cycle indefinitely. Press the **rear reset button** for an immediate refresh.
 
+### Display layout
+
+The 960×540 e-ink screen is split into a 3×2 grid with a narrow left column (200px) for the P&L percentages and sparklines, and two wider columns (380px each) for the stock lists. The updated time and battery percentage sit in the bottom corners as small overlays.
+
 ## How it works
 
 ### M5Paper lifecycle
@@ -144,7 +148,8 @@ On USB power, `M5.shutdown()` can't fully cut power (USB keeps the ESP32 alive).
 2. Fetches positions from `GET /equity/positions`
 3. Stores snapshot history in `rolling_24h_baseline.json` and computes rolling 24-hour % change
 4. Computes per-stock rolling 24-hour % and all-time % change
-5. Writes `dashboard.json` with top 4 / bottom 4 for each category
+5. Updates `value_history.json` (one entry per day, kept forever — used for the overall sparkline chart)
+6. Writes `dashboard.json` with top/bottom 8 for each category, plus chart data arrays
 
 `serve.py` is a threaded HTTP server that serves the JSON file. It uses `ThreadingTCPServer` because Python's built-in `http.server` is single-threaded and hangs when the ESP32 makes incomplete connections.
 
@@ -179,7 +184,10 @@ Trading 212 doesn't have a native rolling "24-hour portfolio change" endpoint. T
 │   ├── update_dashboard.py    # Fetches T212 data, writes dashboard.json
 │   ├── serve.py               # Threaded HTTP file server
 │   ├── setup_cron.sh          # Installs cron jobs on the Pi
-│   └── pyproject.toml         # Python dependencies for `uv sync`
+│   ├── pyproject.toml         # Python dependencies for `uv sync`
+│   ├── rolling_24h_baseline.json  # Auto-generated: recent snapshots for 24h tracking
+│   └── value_history.json     # Auto-generated: daily portfolio values for overall chart
+├── .cursor/skills/m5paper/    # M5Paper development guide (Cursor agent skill)
 ├── .env.example               # Template for required environment variables
 └── README.md
 ```
