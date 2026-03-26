@@ -20,6 +20,7 @@ TRADING212_BASE = "https://live.trading212.com/api/v0"
 
 DASHBOARD_PATH = os.path.join(SCRIPT_DIR, "dashboard.json")
 ROLLING_BASELINE_PATH = os.path.join(SCRIPT_DIR, "rolling_24h_baseline.json")
+VALUE_HISTORY_PATH = os.path.join(SCRIPT_DIR, "value_history.json")
 ROLLING_WINDOW_HOURS = 24
 HISTORY_RETENTION_HOURS = 72
 
@@ -175,6 +176,60 @@ def pick_rolling_baseline(history: list[dict], now_utc: datetime) -> dict | None
     return candidate if candidate is not None else history[0]
 
 
+def load_value_history() -> list[dict]:
+    """Load persistent daily value history (one entry per day, kept forever)."""
+    if not os.path.exists(VALUE_HISTORY_PATH):
+        return []
+    try:
+        with open(VALUE_HISTORY_PATH) as f:
+            data = json.load(f)
+        return data if isinstance(data, list) else []
+    except (json.JSONDecodeError, OSError):
+        return []
+
+
+def save_value_history(entries: list[dict]) -> None:
+    with open(VALUE_HISTORY_PATH, "w") as f:
+        json.dump(entries, f)
+
+
+def update_value_history(total_value: float, now_utc: datetime) -> list[dict]:
+    """Append or update today's entry in the daily value history."""
+    entries = load_value_history()
+    today = now_utc.strftime("%Y-%m-%d")
+    if entries and entries[-1].get("date") == today:
+        entries[-1]["value"] = round(total_value, 2)
+    else:
+        entries.append({"date": today, "value": round(total_value, 2)})
+    save_value_history(entries)
+    return entries
+
+
+def extract_24h_chart(history: list[dict], now_utc: datetime) -> list[float]:
+    """Extract portfolio values from the last 24h of snapshots."""
+    cutoff = now_utc - timedelta(hours=24)
+    values = []
+    for snap in history:
+        ts = parse_snapshot_time(snap.get("timestamp", ""))
+        if ts and ts >= cutoff:
+            values.append(round(snap["value"], 2))
+    return values
+
+
+def downsample(values: list[float], max_points: int) -> list[float]:
+    """Reduce a list of values to at most max_points by averaging buckets."""
+    if len(values) <= max_points:
+        return values
+    step = len(values) / max_points
+    result = []
+    for i in range(max_points):
+        start = int(i * step)
+        end = int((i + 1) * step)
+        bucket = values[start:end]
+        result.append(round(sum(bucket) / len(bucket), 2))
+    return result
+
+
 def to_plain_symbol(ticker: str) -> str:
     """Convert T212 ticker to plain symbol (e.g. AAPL_US_EQ -> AAPL)."""
     base = ticker.replace("_EQ", "")
@@ -273,14 +328,22 @@ def fetch_trading212() -> dict:
         overall_movers[max(0, len(overall_movers) - 8):], key=lambda x: x["pct"]
     )
 
+    # Chart data
+    chart_24h = extract_24h_chart(history, now_utc)
+    daily_history = update_value_history(total_value, now_utc)
+    chart_overall = downsample(
+        [e["value"] for e in daily_history], max_points=180
+    )
+
     return {
         "pnl_pct": round(pnl_pct, 2),
-        # Keep field name for firmware compatibility; value is now rolling 24h.
         "daily_pct": round(daily_pct, 2),
         "winners": winners,
         "losers": losers,
         "best_overall": best_overall,
         "worst_overall": worst_overall,
+        "chart_24h": chart_24h,
+        "chart_overall": chart_overall,
     }
 
 

@@ -224,18 +224,69 @@ void drawInlays(int battPct) {
     canvas.drawString(battBuf, 952, 534);
 }
 
-// Big percentage tile (used for overall P&L and 24h P&L)
-void drawPctTile(int x, int w, int row, const char* label, float pct) {
+// Draw a sparkline chart within the given rectangle
+void drawSparkline(int cx, int cy, int cw, int ch, JsonArray values) {
+    int n = values.size();
+    if (n < 2) return;
+
+    float vmin = values[0].as<float>();
+    float vmax = vmin;
+    for (int i = 1; i < n; i++) {
+        float v = values[i].as<float>();
+        if (v < vmin) vmin = v;
+        if (v > vmax) vmax = v;
+    }
+
+    float range = vmax - vmin;
+    if (range < 0.01f) range = 1.0f;
+
+    // Map value to pixel Y (inverted: high value = low Y)
+    auto mapY = [&](float v) -> int {
+        return cy + ch - 1 - (int)((v - vmin) / range * (ch - 1));
+    };
+
+    // Draw filled area under the line (light grey)
+    for (int i = 0; i < n - 1; i++) {
+        int x0 = cx + (int)((long)i * (cw - 1) / (n - 1));
+        int x1 = cx + (int)((long)(i + 1) * (cw - 1) / (n - 1));
+        int y0 = mapY(values[i].as<float>());
+        int y1 = mapY(values[i + 1].as<float>());
+        for (int px = x0; px <= x1; px++) {
+            int t = (x1 == x0) ? 0 : (px - x0);
+            int d = (x1 == x0) ? 1 : (x1 - x0);
+            int ly = y0 + (y1 - y0) * t / d;
+            canvas.drawFastVLine(px, ly, cy + ch - ly, C_LIGHT);
+        }
+    }
+
+    // Draw the line on top (dark)
+    for (int i = 0; i < n - 1; i++) {
+        int x0 = cx + (int)((long)i * (cw - 1) / (n - 1));
+        int x1 = cx + (int)((long)(i + 1) * (cw - 1) / (n - 1));
+        int y0 = mapY(values[i].as<float>());
+        int y1 = mapY(values[i + 1].as<float>());
+        canvas.drawLine(x0, y0, x1, y1, C_DARK);
+        canvas.drawLine(x0, y0 + 1, x1, y1 + 1, C_DARK);
+    }
+}
+
+// Big percentage tile with optional sparkline chart
+void drawPctTile(int x, int w, int row, const char* label, float pct, JsonArray chart = JsonArray()) {
     int y = row * TH;
     int cx = x + w / 2;
-    drawLabel(cx, y + 18, label);
+    drawLabel(cx, y + 10, label);
 
     char pctBuf[16];
     snprintf(pctBuf, sizeof(pctBuf), "%+.1f%%", pct);
     canvas.setTextDatum(MC_DATUM);
     canvas.setTextSize(5);
     canvas.setTextColor(C_BLACK);
-    canvas.drawString(pctBuf, cx, y + TH / 2 + 15);
+    canvas.drawString(pctBuf, cx, y + 55);
+
+    if (chart && chart.size() >= 2) {
+        int pad = 8;
+        drawSparkline(x + pad, y + 90, w - pad * 2, TH - 100, chart);
+    }
 }
 
 String truncateToWidth(const char* text, int textSize, int maxWidth) {
@@ -316,9 +367,11 @@ void drawDashboard(JsonObject& widgets, int battPct) {
         } else {
             float dailyPct = t212["daily_pct"] | 0.0f;
             float pnlPct   = t212["pnl_pct"]  | 0.0f;
+            JsonArray chart24h   = t212["chart_24h"];
+            JsonArray chartAll   = t212["chart_overall"];
 
             // Row 0: 24h P&L | Winners | Losers
-            drawPctTile(0, COL0_W, 0, "24H", dailyPct);
+            drawPctTile(0, COL0_W, 0, "24H", dailyPct, chart24h);
 
             JsonArray winners = t212["winners"];
             if (winners) drawListTile(COL1_X, COL1_W, 0, "WINNERS", winners);
@@ -327,7 +380,7 @@ void drawDashboard(JsonObject& widgets, int battPct) {
             if (losers) drawListTile(COL2_X, COL2_W, 0, "LOSERS", losers);
 
             // Row 1: Overall P&L | Best Overall | Worst Overall
-            drawPctTile(0, COL0_W, 1, "OVERALL", pnlPct);
+            drawPctTile(0, COL0_W, 1, "OVERALL", pnlPct, chartAll);
 
             JsonArray best = t212["best_overall"];
             if (best) drawListTile(COL1_X, COL1_W, 1, "BEST OVERALL", best);
