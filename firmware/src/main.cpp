@@ -254,15 +254,15 @@ String truncateToWidth(const char* text, int textSize, int maxWidth) {
     return ellipsis;
 }
 
-// List tile showing up to 5 stocks with ticker + % change
+// List tile showing up to 6 stocks with ticker + % change
 void drawListTile(int x, int w, int row, const char* title, JsonArray items) {
     int y = row * TH;
     int cx = x + w / 2;
     drawLabel(cx, y + 10, title);
 
-    int rowY = y + 45;
-    int spacing = 43;
-    int count = items.size() < 5 ? (int)items.size() : 5;
+    int rowY = y + 42;
+    int spacing = 36;
+    int count = items.size() < 6 ? (int)items.size() : 6;
 
     for (int i = 0; i < count; i++) {
         const char* name = items[i]["ticker"] | "???";
