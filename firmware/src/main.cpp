@@ -180,17 +180,19 @@ void syncTime() {
 
 // ---- Drawing ----
 
-// 3x2 tile grid
-#define TW   320   // tile width  (960 / 3)
-#define TH   270   // tile height (540 / 2)
+// Variable-width 3x2 grid: narrow P&L column, wider list columns
+#define COL0_W 200   // P&L tiles
+#define COL1_W 380   // winners / best overall
+#define COL2_W 380   // losers / worst overall
+#define COL1_X COL0_W
+#define COL2_X (COL0_W + COL1_W)
+#define TH     270   // tile height (540 / 2)
 
 void drawGrid() {
     int g = 10;
-    // Vertical dividers
-    canvas.fillRect(TW - g / 2,      0, g, 540, C_LIGHT);  // col 0|1
-    canvas.fillRect(TW * 2 - g / 2,  0, g, 540, C_LIGHT);  // col 1|2
-    // Horizontal divider
-    canvas.fillRect(0, TH - g / 2, 960, g, C_LIGHT);       // row 0|1
+    canvas.fillRect(COL1_X - g / 2, 0, g, 540, C_LIGHT);   // col 0|1
+    canvas.fillRect(COL2_X - g / 2, 0, g, 540, C_LIGHT);   // col 1|2
+    canvas.fillRect(0, TH - g / 2, 960, g, C_LIGHT);        // row 0|1
 }
 
 void drawLabel(int cx, int y, const char* label) {
@@ -223,10 +225,9 @@ void drawInlays(int battPct) {
 }
 
 // Big percentage tile (used for overall P&L and 24h P&L)
-void drawPctTile(int col, int row, const char* label, float pct) {
-    int x = col * TW;
+void drawPctTile(int x, int w, int row, const char* label, float pct) {
     int y = row * TH;
-    int cx = x + TW / 2;
+    int cx = x + w / 2;
     drawLabel(cx, y + 18, label);
 
     char pctBuf[16];
@@ -253,29 +254,27 @@ String truncateToWidth(const char* text, int textSize, int maxWidth) {
     return ellipsis;
 }
 
-// List tile showing up to 4 stocks with company name + % change
-void drawListTile(int col, int row, const char* title, JsonArray items) {
-    int x = col * TW;
+// List tile showing up to 5 stocks with ticker + % change
+void drawListTile(int x, int w, int row, const char* title, JsonArray items) {
     int y = row * TH;
-    int cx = x + TW / 2;
+    int cx = x + w / 2;
     drawLabel(cx, y + 10, title);
 
-    int rowY = y + 50;
-    int spacing = 52;
-    int count = items.size() < 4 ? (int)items.size() : 4;
+    int rowY = y + 45;
+    int spacing = 43;
+    int count = items.size() < 5 ? (int)items.size() : 5;
 
     for (int i = 0; i < count; i++) {
         const char* name = items[i]["ticker"] | "???";
         float pct = items[i]["pct"] | 0.0f;
 
         char pctBuf[16];
-        snprintf(pctBuf, sizeof(pctBuf), "%+.0f%%", pct);
+        snprintf(pctBuf, sizeof(pctBuf), "%+.1f%%", pct);
 
         const int nameLeft = x + 15;
-        const int pctRight = x + TW - 15;
+        const int pctRight = x + w - 15;
         const int colGap = 10;
 
-        // Keep the % at a consistent size and fit names into the remaining width.
         canvas.setTextSize(3);
         int pctWidth = canvas.textWidth(pctBuf);
         int nameMaxWidth = pctRight - pctWidth - colGap - nameLeft;
@@ -284,13 +283,11 @@ void drawListTile(int col, int row, const char* title, JsonArray items) {
         const int nameSize = 2;
         String nameText = truncateToWidth(name, nameSize, nameMaxWidth);
 
-        // Name left-aligned (fixed size, truncated to fit before % column)
         canvas.setTextDatum(TL_DATUM);
         canvas.setTextSize(nameSize);
         canvas.setTextColor(C_BLACK);
         canvas.drawString(nameText.c_str(), nameLeft, rowY);
 
-        // Percent right-aligned
         canvas.setTextDatum(TR_DATUM);
         canvas.setTextSize(3);
         canvas.setTextColor(C_DARK);
@@ -321,22 +318,22 @@ void drawDashboard(JsonObject& widgets, int battPct) {
             float pnlPct   = t212["pnl_pct"]  | 0.0f;
 
             // Row 0: 24h P&L | Winners | Losers
-            drawPctTile(0, 0, "24H", dailyPct);
+            drawPctTile(0, COL0_W, 0, "24H", dailyPct);
 
             JsonArray winners = t212["winners"];
-            if (winners) drawListTile(1, 0, "WINNERS", winners);
+            if (winners) drawListTile(COL1_X, COL1_W, 0, "WINNERS", winners);
 
             JsonArray losers = t212["losers"];
-            if (losers) drawListTile(2, 0, "LOSERS", losers);
+            if (losers) drawListTile(COL2_X, COL2_W, 0, "LOSERS", losers);
 
             // Row 1: Overall P&L | Best Overall | Worst Overall
-            drawPctTile(0, 1, "OVERALL", pnlPct);
+            drawPctTile(0, COL0_W, 1, "OVERALL", pnlPct);
 
             JsonArray best = t212["best_overall"];
-            if (best) drawListTile(1, 1, "BEST OVERALL", best);
+            if (best) drawListTile(COL1_X, COL1_W, 1, "BEST OVERALL", best);
 
             JsonArray worst = t212["worst_overall"];
-            if (worst) drawListTile(2, 1, "WORST OVERALL", worst);
+            if (worst) drawListTile(COL2_X, COL2_W, 1, "WORST OVERALL", worst);
         }
     }
 

@@ -261,16 +261,16 @@ def fetch_trading212() -> dict:
         overall_change = (pnl / cost * 100) if cost else 0.0
         overall_movers.append({"ticker": label, "pct": round(overall_change, 2)})
 
-    # 24h window: top 4 winners, bottom 4 losers
+    # 24h window: top 5 winners, bottom 5 losers
     daily_movers.sort(key=lambda x: x["pct"], reverse=True)
-    winners = daily_movers[:4]
-    losers = sorted(daily_movers[max(0, len(daily_movers) - 4):], key=lambda x: x["pct"])
+    winners = daily_movers[:5]
+    losers = sorted(daily_movers[max(0, len(daily_movers) - 5):], key=lambda x: x["pct"])
 
-    # Overall: top 4 best, bottom 4 worst
+    # Overall: top 5 best, bottom 5 worst
     overall_movers.sort(key=lambda x: x["pct"], reverse=True)
-    best_overall = overall_movers[:4]
+    best_overall = overall_movers[:5]
     worst_overall = sorted(
-        overall_movers[max(0, len(overall_movers) - 4):], key=lambda x: x["pct"]
+        overall_movers[max(0, len(overall_movers) - 5):], key=lambda x: x["pct"]
     )
 
     return {
