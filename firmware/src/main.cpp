@@ -64,6 +64,10 @@ void setup() {
     uint32_t battMv = M5.getBatteryVoltage();
     int battPct = constrain(map(battMv, 3300, 4200, 0, 100), 0, 100);
 
+    Serial.begin(115200);
+    delay(200);
+    Serial.println("\n--- M5Paper dash boot ---");
+
     // Boot screen
     canvas.createCanvas(960, 540);
     canvas.fillCanvas(C_WHITE);
@@ -73,21 +77,37 @@ void setup() {
     canvas.drawString("BOOTING...", 480, 270);
     canvas.pushCanvas(0, 0, UPDATE_MODE_GC16);
 
-    // Connect WiFi
+    // Connect WiFi (clean driver state after RTC wake / odd resumes)
+    Serial.println("WiFi: disconnect + STA");
+    WiFi.disconnect(true, false);  // do not eraseap — would wipe NVS WiFi storage
+    WiFi.mode(WIFI_OFF);
+    delay(100);
+    esp_task_wdt_reset();
+
     WiFi.mode(WIFI_STA);
     WiFi.setSleep(false);
     WiFi.begin(wifi_ssid, wifi_pass);
-    int attempts = 0;
-    while (WiFi.status() != WL_CONNECTED && attempts < 40) {
+
+    const unsigned long wifiDeadlineMs = 45000;
+    const unsigned long wifiStarted = millis();
+    unsigned long lastWifiLog = wifiStarted;
+    while (WiFi.status() != WL_CONNECTED && (millis() - wifiStarted) < wifiDeadlineMs) {
+        esp_task_wdt_reset();
         delay(250);
-        attempts++;
+        if (millis() - lastWifiLog >= 5000) {
+            lastWifiLog = millis();
+            Serial.printf("WiFi status=%d elapsed=%lu ms\n", (int)WiFi.status(), millis() - wifiStarted);
+        }
     }
 
     if (WiFi.status() != WL_CONNECTED) {
+        Serial.println("WiFi: failed (timeout or no AP)");
         drawNoWifi();
         goToSleep();
         return;
     }
+
+    Serial.printf("WiFi: connected ip=%s\n", WiFi.localIP().toString().c_str());
 
     // Status screens: one message each, size 5, full refresh to avoid ghosting
     auto showStatus = [&](const char* msg, const char* sub = nullptr) {
@@ -105,6 +125,7 @@ void setup() {
     };
 
     showStatus("Fetching dashboard...");
+    Serial.println("HTTP: GET dashboard");
     esp_task_wdt_reset();
 
     HTTPClient http;
@@ -117,6 +138,8 @@ void setup() {
         payload = http.getString();
     }
     http.end();
+    Serial.printf("HTTP: code=%d len=%u\n", httpCode, (unsigned)payload.length());
+    esp_task_wdt_reset();
 
     if (httpCode != 200) {
         char errBuf[64];
@@ -160,6 +183,7 @@ void loop() {
 // ---- NTP ----
 
 void syncTime() {
+    esp_task_wdt_reset();
     configTzTime("GMT0BST,M3.5.0/1,M10.5.0", "pool.ntp.org");
     struct tm timeinfo;
     if (getLocalTime(&timeinfo, 5000)) {

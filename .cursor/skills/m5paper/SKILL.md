@@ -40,6 +40,24 @@ lib_deps =
 - Use `board = m5stack-fire` (no official m5paper board definition)
 - PlatformIO needs pip in venv. If using uv: `uv pip install pip`
 
+### This repo (`m5paper-dash-trading212`)
+
+PlatformIO Core is installed in the **repository root** Python venv, not inside `firmware/`. The `firmware/` directory only holds the PIO project (`platformio.ini`, `src/`).
+
+```bash
+# from repo root
+uv venv .venv
+source .venv/bin/activate
+uv pip install pip platformio
+
+cd firmware
+pio run              # build
+pio run -t upload    # flash
+pio device monitor   # serial @ 115200
+```
+
+If `pio` is not on your PATH, call it explicitly: **`.venv/bin/pio`** from repo root (still run `cd firmware` first so PIO finds `platformio.ini`).
+
 ## Display — critical gotchas
 
 ### Rotation (use 0-3 only, NOT degrees)
@@ -107,9 +125,20 @@ M5.RTC.getTime(&time); M5.RTC.getDate(&date);
 ## WiFi + HTTP
 
 ```cpp
+// Optional: clear stale STA state after RTC wake (do NOT use eraseap=true — wipes NVS WiFi)
+WiFi.disconnect(true, false);
+WiFi.mode(WIFI_OFF);
+delay(100);
+
+WiFi.mode(WIFI_STA);
+WiFi.setSleep(false);
 WiFi.begin("SSID", "PASS");
-int attempts = 0;
-while (WiFi.status() != WL_CONNECTED && attempts++ < 40) delay(250);
+
+unsigned long t0 = millis();
+while (WiFi.status() != WL_CONNECTED && millis() - t0 < 45000UL) {
+    esp_task_wdt_reset();  // feed WDT — marginal WiFi can exceed default task WDT window
+    delay(250);
+}
 
 HTTPClient http;
 http.begin("http://host:port/path");
@@ -120,6 +149,16 @@ if (http.GET() == 200) {
 http.end();
 WiFi.disconnect(true);
 ```
+
+### Stuck on "BOOTING..." (screen never changes)
+
+The BOOTING splash is replaced only **after** WiFi connects (or times out → "WiFi Failed"). So a frozen BOOTING image almost always means **the device is still in the WiFi association phase** (or crashed/rebooted before the next full refresh).
+
+1. **USB serial** (`pio device monitor`, 115200): confirm whether you see `WiFi: connected` vs repeated `WiFi status=...` vs reboot loop (Guru Meditation).
+2. **Task WDT**: If WiFi or the stack blocks too long without `esp_task_wdt_reset()`, the ESP32 resets — you may mostly *see* BOOTING between panics. Feed the WDT in the WiFi wait loop on long timeouts.
+3. **Longer WiFi deadline**: Weak 2.4 GHz (distance, AP load) may need **>10s**; use a **millis() deadline** (e.g. 45s), not only a small fixed attempt count.
+4. **Do not** pass `eraseap=true` to `WiFi.disconnect()` — that erases stored WiFi credentials in NVS.
+5. **Not NTP**: NTP/`syncTime()` runs after the dashboard draw in this project; a hang there would show **Fetching...** or the dashboard, not BOOTING (see below).
 
 ### Battery: NTP must run AFTER draw
 
@@ -179,8 +218,8 @@ if (M5.BtnP.wasPressed()) { /* side toggle click  (GPIO38) */ }
 if (M5.BtnR.wasPressed()) { /* side toggle right (GPIO37) */ }
 ```
 
-- **Rear button (reset)**: hardware reset, works ANY time — even after `M5.shutdown()`.
-- **Side toggle**: only works while ESP32 is powered on. **Cannot** wake from `M5.shutdown()`.
+- **Rear button (reset)**: **USB plugged in** → classic ESP32 reset (reboots firmware). **Battery + already shut down** (`M5.shutdown()` cut power) → **does nothing useful** — ESP32 has no VCC, so there is no reset to trigger; use **RTC alarm**, **plug USB**, or **long-press PWR** (rotary center ~2s) to turn on ([M5EPD #9](https://github.com/m5stack/M5EPD/issues/9)). While still awake on battery, rear reset may still reboot the chip.
+- **Side toggle** (GPIO37/38/39): only works while ESP32 is powered. **Long-press center (PWR ~2s)** can power the unit on from full shutdown; left/right/short click need the CPU running your `loop()`.
 
 ## USB serial
 - macOS: `/dev/cu.usbserial-*` (port name changes on reconnect)

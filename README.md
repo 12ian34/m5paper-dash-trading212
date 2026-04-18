@@ -116,7 +116,7 @@ Once flashed, the M5Paper will:
 5. Sync the RTC via NTP
 6. Shut down and set a 30-minute wake alarm
 
-It repeats this cycle indefinitely. Press the **rear reset button** for an immediate refresh.
+It repeats this cycle indefinitely. **Manual wake / reboot:** after full shutdown on **battery**, use **long-press the rotary PWR button** (~2 s) or wait for the **RTC alarm**; the **rear reset** only behaves like a normal reset when **USB-C is connected** (ESP32 stays powered). On battery alone after sleep, the rear button does not power the board back on.
 
 ### Display layout
 
